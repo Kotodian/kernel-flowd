@@ -193,9 +193,16 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	SkbConsumeUdp *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
-	UdpSendSkb    *ebpf.ProgramSpec `ebpf:"udp_send_skb"`
-	UdpV6SendSkb  *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb"`
+	IpLocalOut       *ebpf.ProgramSpec `ebpf:"__ip_local_out"`
+	HandleSkb        *ebpf.ProgramSpec `ebpf:"handle_skb"`
+	InetCskAccept    *ebpf.ProgramSpec `ebpf:"inet_csk_accept"`
+	InetSockSetState *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
+	Ip6Xmit          *ebpf.ProgramSpec `ebpf:"ip6_xmit"`
+	SkbConsumeUdp    *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
+	TcpV4DoRcv       *ebpf.ProgramSpec `ebpf:"tcp_v4_do_rcv"`
+	TcpV6DoRcv       *ebpf.ProgramSpec `ebpf:"tcp_v6_do_rcv"`
+	UdpSendSkb       *ebpf.ProgramSpec `ebpf:"udp_send_skb"`
+	UdpV6SendSkb     *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
@@ -275,14 +282,28 @@ type bpfVariables struct {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	SkbConsumeUdp *ebpf.Program `ebpf:"skb_consume_udp"`
-	UdpSendSkb    *ebpf.Program `ebpf:"udp_send_skb"`
-	UdpV6SendSkb  *ebpf.Program `ebpf:"udp_v6_send_skb"`
+	IpLocalOut       *ebpf.Program `ebpf:"__ip_local_out"`
+	HandleSkb        *ebpf.Program `ebpf:"handle_skb"`
+	InetCskAccept    *ebpf.Program `ebpf:"inet_csk_accept"`
+	InetSockSetState *ebpf.Program `ebpf:"inet_sock_set_state"`
+	Ip6Xmit          *ebpf.Program `ebpf:"ip6_xmit"`
+	SkbConsumeUdp    *ebpf.Program `ebpf:"skb_consume_udp"`
+	TcpV4DoRcv       *ebpf.Program `ebpf:"tcp_v4_do_rcv"`
+	TcpV6DoRcv       *ebpf.Program `ebpf:"tcp_v6_do_rcv"`
+	UdpSendSkb       *ebpf.Program `ebpf:"udp_send_skb"`
+	UdpV6SendSkb     *ebpf.Program `ebpf:"udp_v6_send_skb"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
+		p.IpLocalOut,
+		p.HandleSkb,
+		p.InetCskAccept,
+		p.InetSockSetState,
+		p.Ip6Xmit,
 		p.SkbConsumeUdp,
+		p.TcpV4DoRcv,
+		p.TcpV6DoRcv,
 		p.UdpSendSkb,
 		p.UdpV6SendSkb,
 	)

@@ -11,12 +11,31 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"unsafe"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
-	dns "golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/sys/unix"
 )
+
+type Proto uint8
+
+const (
+	ProtoTCP Proto = 6
+	ProtoUDP Proto = 17
+)
+
+func (p Proto) String() string {
+	switch p {
+	case ProtoTCP:
+		return "tcp"
+	case ProtoUDP:
+		return "udp"
+	}
+	return "unknown"
+}
 
 type Role uint8
 
@@ -42,6 +61,56 @@ const (
 	RoleUDPServer
 )
 
+type TcpState uint8
+
+const (
+	TcpStateNone TcpState = iota
+	TcpStateEstablished
+	TcpStateSynSent
+	TcpStateSynRecv
+	TcpStateFinWait1
+	TcpStateFinWait2
+	TcpStateTimeWait
+	TcpStateClose
+	TcpStateCloseWait
+	TcpStateLastAck
+	TcpStateListening
+	TcpStateClosing
+	TcpStateNewSynRecv
+)
+
+func (s TcpState) String() string {
+	switch s {
+	case TcpStateNone:
+		return "none"
+	case TcpStateEstablished:
+		return "established"
+	case TcpStateSynSent:
+		return "syn sent"
+	case TcpStateSynRecv:
+		return "syn recv"
+	case TcpStateFinWait1:
+		return "fin wait 1"
+	case TcpStateFinWait2:
+		return "fin wait 2"
+	case TcpStateTimeWait:
+		return "time wait"
+	case TcpStateClose:
+		return "close"
+	case TcpStateCloseWait:
+		return "close wait"
+	case TcpStateLastAck:
+		return "last ack"
+	case TcpStateListening:
+		return "listening"
+	case TcpStateClosing:
+		return "closing"
+	case TcpStateNewSynRecv:
+		return "new syn recv"
+	}
+	return "unknown"
+}
+
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -tags linux -target amd64 -type record_sock bpf tcp_udp.bpf.c
 func main() {
 	// Subscribe to signals for terminating the program.
@@ -55,8 +124,12 @@ func main() {
 
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %s", err)
+		var verr *ebpf.VerifierError
+		if errors.As(err, &verr) {
+			log.Fatalf("loading objects: %+v", verr)
+		}
 	}
+
 	defer objs.Close()
 	err := objs.bpfVariables.SelfPid.Set(uint32(os.Getpid()))
 	if err != nil {
@@ -82,6 +155,52 @@ func main() {
 		log.Fatalf("creating kprobe skb_consume_udp: %s", err)
 	}
 	defer consumeUdp.Close()
+
+	inetCskAccept, err := link.Kretprobe("inet_csk_accept", objs.InetCskAccept, nil)
+	if err != nil {
+		log.Fatalf("creating kretprobe inet_csk_accept: %s", err)
+	}
+	defer inetCskAccept.Close()
+
+	// trace point
+	inetSockSetState, err := link.Tracepoint("sock", "inet_sock_set_state", objs.InetSockSetState, nil)
+	if err != nil {
+		log.Fatalf("creating tracepoint inet_sock_set_state: %s", err)
+	}
+	defer inetSockSetState.Close()
+
+	tcpV4DoRcv, err := link.Kprobe("tcp_v4_do_rcv", objs.TcpV4DoRcv, nil)
+	if err != nil {
+		log.Fatalf("creating kprobe tcp_v4_do_rcv: %s", err)
+	}
+	defer tcpV4DoRcv.Close()
+
+	tcpV6DoRcv, err := link.Kprobe("tcp_v6_do_rcv", objs.TcpV6DoRcv, nil)
+	if err != nil {
+		log.Fatalf("creating kprobe tcp_v6_do_rcv: %s", err)
+	}
+	defer tcpV6DoRcv.Close()
+
+	ipLocalOut, err := link.Kprobe("ip_local_out", objs.IpLocalOut, nil)
+	if err != nil {
+		log.Fatalf("creating kprobe ip_local_out: %s", err)
+	}
+	defer ipLocalOut.Close()
+	ip6Xmit, err := link.Kprobe("ip6_xmit", objs.Ip6Xmit, nil)
+	if err != nil {
+		log.Fatalf("creating kprobe ip6_xmit: %s", err)
+	}
+	defer ip6Xmit.Close()
+
+	// raw socket
+	sock, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(htons(syscall.ETH_P_ALL)))
+	if err != nil {
+		log.Fatalf("creating raw socket: %s", err)
+	}
+	defer syscall.Close(sock)
+	if err := syscall.SetsockoptInt(sock, syscall.SOL_SOCKET, unix.SO_ATTACH_BPF, objs.HandleSkb.FD()); err != nil {
+		log.Fatalf("attaching raw socket: %s", err)
+	}
 
 	rd, err := ringbuf.NewReader(objs.RingbufRecords)
 	if err != nil {
@@ -139,27 +258,20 @@ func main() {
 		if event.Family == 2 {
 			localIP := fmt.Sprintf("%d.%d.%d.%d", localIPBytes[0], localIPBytes[1], localIPBytes[2], localIPBytes[3])
 			remoteIP := fmt.Sprintf("%d.%d.%d.%d", remoteIPBytes[0], remoteIPBytes[1], remoteIPBytes[2], remoteIPBytes[3])
-			if remoteIP == "223.5.5.5" && event.Rport == 53 {
-				fmt.Printf("Received event: process: %d, local ip: %s, remote ip: %s, local port: %d, remote port: %d, role: %s, rx_bytes: %d, tx_bytes: %d, state: %d\n",
-					event.Rec.Pid, localIP, remoteIP, event.Lport, event.Rport, Role(event.Role).String(), event.RxBytes, event.TxBytes, event.State)
-				for i := 0; i < int(event.AppMsg.Cnt); i++ {
-					if event.AppMsg.Len[i] > 0 {
-						data := make([]byte, event.AppMsg.Len[i])
-						for j := 0; j < int(event.AppMsg.Len[i]); j++ {
-							data[j] = byte(event.AppMsg.Data[i][j])
-						}
-						message := dns.Message{}
-						err := message.Unpack(data)
-						if err != nil {
-							fmt.Println(err)
-							continue
-						}
-						for _, answer := range message.Answers {
-							fmt.Println(answer.GoString())
-						}
-					}
-				}
-			}
+			fmt.Printf("Received event: process: %d, local ip: %s, remote ip: %s, local port: %d, remote port: %d, proto: %s, role: %s, rx_bytes: %d, tx_bytes: %d, state: %d\n",
+				event.Rec.Pid, localIP, remoteIP, event.Lport, event.Rport, Proto(event.Proto), Role(event.Role), event.RxBytes, event.TxBytes, event.State)
+		} else if event.Family == 10 {
+			localIP := fmt.Sprintf("%x:%x:%x:%x:%x:%x:%x:%x", localIPBytes[0], localIPBytes[1], localIPBytes[2], localIPBytes[3], localIPBytes[4], localIPBytes[5], localIPBytes[6], localIPBytes[7])
+			remoteIP := fmt.Sprintf("%x:%x:%x:%x:%x:%x:%x:%x", remoteIPBytes[0], remoteIPBytes[1], remoteIPBytes[2], remoteIPBytes[3], remoteIPBytes[4], remoteIPBytes[5], remoteIPBytes[6], remoteIPBytes[7])
+			fmt.Printf("Received event: process: %d, local ip: %s, remote ip: %s, local port: %d, remote port: %d, proto: %s, role: %s, rx_bytes: %d, tx_bytes: %d, state: %d\n",
+				event.Rec.Pid, localIP, remoteIP, event.Lport, event.Rport, Proto(event.Proto), Role(event.Role), event.RxBytes, event.TxBytes, event.State)
 		}
 	}
+}
+
+// htons converts the unsigned short integer hostshort from host byte order to network byte order.
+func htons(i uint16) uint16 {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, i)
+	return *(*uint16)(unsafe.Pointer(&b[0]))
 }
