@@ -42,7 +42,7 @@ const (
 	RoleUDPServer
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -tags linux -target amd64 -type record_sock bpf dns.bpf.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -tags linux -target amd64 -type record_sock bpf tcp_udp.bpf.c
 func main() {
 	// Subscribe to signals for terminating the program.
 	stopper := make(chan os.Signal, 1)
@@ -58,6 +58,12 @@ func main() {
 		log.Fatalf("loading objects: %s", err)
 	}
 	defer objs.Close()
+	err := objs.bpfVariables.SelfPid.Set(uint32(os.Getpid()))
+	if err != nil {
+		log.Fatalf("setting self pid: %s", err)
+	} else {
+		fmt.Printf("self pid set to %d\n", os.Getpid())
+	}
 
 	sendSkb, err := link.Kprobe("udp_send_skb", objs.UdpSendSkb, nil)
 	if err != nil {
