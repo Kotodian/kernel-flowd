@@ -199,6 +199,7 @@ type bpfProgramSpecs struct {
 	InetSockSetState *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	Ip6Xmit          *ebpf.ProgramSpec `ebpf:"ip6_xmit"`
 	SkbConsumeUdp    *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
+	TcpDataQueue     *ebpf.ProgramSpec `ebpf:"tcp_data_queue"`
 	TcpV4DoRcv       *ebpf.ProgramSpec `ebpf:"tcp_v4_do_rcv"`
 	TcpV6DoRcv       *ebpf.ProgramSpec `ebpf:"tcp_v6_do_rcv"`
 	UdpSendSkb       *ebpf.ProgramSpec `ebpf:"udp_send_skb"`
@@ -288,6 +289,7 @@ type bpfPrograms struct {
 	InetSockSetState *ebpf.Program `ebpf:"inet_sock_set_state"`
 	Ip6Xmit          *ebpf.Program `ebpf:"ip6_xmit"`
 	SkbConsumeUdp    *ebpf.Program `ebpf:"skb_consume_udp"`
+	TcpDataQueue     *ebpf.Program `ebpf:"tcp_data_queue"`
 	TcpV4DoRcv       *ebpf.Program `ebpf:"tcp_v4_do_rcv"`
 	TcpV6DoRcv       *ebpf.Program `ebpf:"tcp_v6_do_rcv"`
 	UdpSendSkb       *ebpf.Program `ebpf:"udp_send_skb"`
@@ -302,6 +304,7 @@ func (p *bpfPrograms) Close() error {
 		p.InetSockSetState,
 		p.Ip6Xmit,
 		p.SkbConsumeUdp,
+		p.TcpDataQueue,
 		p.TcpV4DoRcv,
 		p.TcpV6DoRcv,
 		p.UdpSendSkb,

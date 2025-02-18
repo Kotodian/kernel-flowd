@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -193,11 +194,18 @@ func main() {
 	defer ip6Xmit.Close()
 
 	// raw socket
-	sock, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(htons(syscall.ETH_P_ALL)))
+	sock, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC|syscall.SOCK_NONBLOCK, int(htons(syscall.ETH_P_ALL)))
 	if err != nil {
 		log.Fatalf("creating raw socket: %s", err)
 	}
 	defer syscall.Close(sock)
+	sll := syscall.SockaddrLinklayer{
+		Protocol: htons(syscall.ETH_P_ALL),
+		Ifindex:  4,
+	}
+	if err := syscall.Bind(sock, &sll); err != nil {
+		log.Fatalf("binding raw socket: %s", err)
+	}
 	if err := syscall.SetsockoptInt(sock, syscall.SOL_SOCKET, unix.SO_ATTACH_BPF, objs.HandleSkb.FD()); err != nil {
 		log.Fatalf("attaching raw socket: %s", err)
 	}
@@ -255,17 +263,19 @@ func main() {
 		for i := 0; i < 16; i++ {
 			remoteIPBytes[i] = byte(event.Raddr[i])
 		}
+
+		var localIP, remoteIP net.IP
 		if event.Family == 2 {
-			localIP := fmt.Sprintf("%d.%d.%d.%d", localIPBytes[0], localIPBytes[1], localIPBytes[2], localIPBytes[3])
-			remoteIP := fmt.Sprintf("%d.%d.%d.%d", remoteIPBytes[0], remoteIPBytes[1], remoteIPBytes[2], remoteIPBytes[3])
-			fmt.Printf("Received event: process: %d, local ip: %s, remote ip: %s, local port: %d, remote port: %d, proto: %s, role: %s, rx_bytes: %d, tx_bytes: %d, state: %d\n",
-				event.Rec.Pid, localIP, remoteIP, event.Lport, event.Rport, Proto(event.Proto), Role(event.Role), event.RxBytes, event.TxBytes, event.State)
+			localIP = net.IPv4(localIPBytes[0], localIPBytes[1], localIPBytes[2], localIPBytes[3])
+			remoteIP = net.IPv4(remoteIPBytes[0], remoteIPBytes[1], remoteIPBytes[2], remoteIPBytes[3])
 		} else if event.Family == 10 {
-			localIP := fmt.Sprintf("%x:%x:%x:%x:%x:%x:%x:%x", localIPBytes[0], localIPBytes[1], localIPBytes[2], localIPBytes[3], localIPBytes[4], localIPBytes[5], localIPBytes[6], localIPBytes[7])
-			remoteIP := fmt.Sprintf("%x:%x:%x:%x:%x:%x:%x:%x", remoteIPBytes[0], remoteIPBytes[1], remoteIPBytes[2], remoteIPBytes[3], remoteIPBytes[4], remoteIPBytes[5], remoteIPBytes[6], remoteIPBytes[7])
-			fmt.Printf("Received event: process: %d, local ip: %s, remote ip: %s, local port: %d, remote port: %d, proto: %s, role: %s, rx_bytes: %d, tx_bytes: %d, state: %d\n",
-				event.Rec.Pid, localIP, remoteIP, event.Lport, event.Rport, Proto(event.Proto), Role(event.Role), event.RxBytes, event.TxBytes, event.State)
+			// may be 4 to 6
+			localIP = net.IP(localIPBytes)
+			remoteIP = net.IP(remoteIPBytes)
 		}
+
+		fmt.Printf("Received event: process: %d, local ip: %s, remote ip: %s, local port: %d, remote port: %d, proto: %s, role: %s, rx_bytes: %d, tx_bytes: %d, state: %d\n",
+			event.Rec.Pid, localIP, remoteIP, event.Lport, event.Rport, Proto(event.Proto), Role(event.Role), event.RxBytes, event.TxBytes, event.State)
 	}
 }
 

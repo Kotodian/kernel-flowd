@@ -936,7 +936,7 @@ static __always_inline int handle_tcp_event(void *ctx, struct sock_event_info *e
         stuple->rport = BPF_CORE_READ(args, dport);
         stuple->proto = IPPROTO_TCP;
         if (bpf_map_update_elem(&hash_tuples, stuple, &key, BPF_ANY))
-            bpf_printk("WARNING: Failed to update client/server stuple for key %lx and pid %u\n", key, pid);
+            bpf_printk("WARNING: Failed to update tcp server stuple for key %lx and pid %u\n", key, pid);
 
         tcp_state_old = BPF_CORE_READ(args, oldstate);
         tcp_state = BPF_CORE_READ(args, newstate);
@@ -972,7 +972,6 @@ static __always_inline int handle_tcp_event(void *ctx, struct sock_event_info *e
             bpf_probe_read_kernel(sinfo->raddr, sizeof(sinfo->raddr), stuple->raddr);
             sinfo->lport = stuple->lport;
             sinfo->rport = stuple->rport;
-
             sinfo->rx_ts = bpf_ktime_get_ns();
             sinfo->rx_ts_first = sinfo->rx_ts;
             sinfo->ts_first = sinfo->rx_ts;
@@ -999,7 +998,6 @@ static __always_inline int handle_tcp_event(void *ctx, struct sock_event_info *e
             bpf_probe_read_kernel(sinfo->raddr, sizeof(sinfo->raddr), stuple->raddr);
             sinfo->lport = stuple->lport;
             sinfo->rport = stuple->rport;
-
             sinfo->rx_ts = bpf_ktime_get_ns();
             sinfo->rx_ts_first = sinfo->rx_ts;
             sinfo->ts_first = sinfo->rx_ts;
@@ -1025,14 +1023,15 @@ static __always_inline int handle_tcp_event(void *ctx, struct sock_event_info *e
             sinfo = bpf_map_lookup_elem(&hash_socks, &key_alt);
             if (!sinfo)
             {
-                u16 lport = stuple->lport;
-                stuple->lport = 0;
+                /* try again with rport */
+                u16 rport = stuple->rport;
+                stuple->rport = 0;
                 key_alt = crc64(0, (const u8 *)stuple, sizeof(*stuple));
-                stuple->lport = lport;
+                stuple->rport = rport;
                 sinfo = bpf_map_lookup_elem(&hash_socks, &key_alt);
                 if (!sinfo)
                 {
-                    bpf_printk("WARNING: Failed to find tcp client socket for alt key %lx for pid %u\n", key_alt, pid);
+                    // bpf_printk("WARNING: Failed to find tcp client socket for alt key %lx for pid %u\n", key_alt, pid);
                     return 0;
                 }
             }
@@ -1048,7 +1047,7 @@ static __always_inline int handle_tcp_event(void *ctx, struct sock_event_info *e
             sinfo = bpf_map_lookup_elem(&hash_socks, &key);
             if (!sinfo)
             {
-                bpf_printk("WARNING: Failed lookup to delete tcp socket for key %lx, lport %u for pid %u\n", key, stuple->lport, pid);
+                // bpf_printk("WARNING: Failed lookup to delete tcp socket for key %lx, lport %u for pid %u\n", key, stuple->lport, pid);
                 return 0;
             }
             sinfo->state = tcp_state;
@@ -1089,7 +1088,7 @@ static __always_inline int handle_tcp_event(void *ctx, struct sock_event_info *e
         stuple->rport = sinfo->rport;
         stuple->proto = IPPROTO_TCP;
         if (bpf_map_update_elem(&hash_tuples, stuple, &key, BPF_ANY))
-            bpf_printk("WARNING: Failed to add tcp server stuple for key %lx for pid %u\n", key, pid);
+            bpf_printk("WARNING: Failed to update tcp server stuple for key %lx and pid %u\n", key, pid);
         if (bpf_map_update_elem(&hash_socks, &key, sinfo, BPF_ANY))
             bpf_printk("WARNING: Failed to add tcp server socket for key %lx for pid %u\n", key, pid);
     }
@@ -1153,8 +1152,6 @@ static __always_inline int handle_tcp_packet(struct sock *sock, struct sk_buff *
         struct tcphdr *tcphdr = (struct tcphdr *)(BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, transport_header));
         struct iphdr *iphdr = NULL;
         struct ipv6hdr *ipv6hdr = NULL;
-        // u8 *data = NULL;
-        // __u16 num = 0;
         __u32 data_len = 0;
 
         if (sinfo->family == AF_INET)
@@ -1297,6 +1294,12 @@ int BPF_KPROBE(tcp_v6_do_rcv, struct sock *sock, struct sk_buff *skb)
     return 0;
 }
 
+SEC("kprobe/tcp_data_queue")
+int BPF_KPROBE(tcp_data_queue, struct sock *sk, struct sk_buff *skb)
+{
+    return 0;
+}
+
 SEC("kprobe/__ip_local_out")
 int BPF_KPROBE(__ip_local_out, struct net *net, struct sock *sk, struct sk_buff *skb)
 {
@@ -1379,8 +1382,8 @@ int handle_skb(struct __sk_buff *skb) {
 
         bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, tot_len), &ip_len, sizeof(ip_len));
         ip_len = __bpf_ntohs(ip_len);
-        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, saddr), isrx ? raddr : laddr, 4);
-        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, daddr), isrx ? laddr : raddr, 4);
+        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, saddr), isrx ? laddr : raddr, 4);
+        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, daddr), isrx ? raddr : laddr, 4);
     } else {
         iphdr_len = sizeof(struct ipv6hdr);
         __u8 lenhdr;
@@ -1414,8 +1417,8 @@ int handle_skb(struct __sk_buff *skb) {
         proto = IPPROTO_TCP;
         bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, payload_len), &ip_len, sizeof(ip_len));
         ip_len = __bpf_ntohs(ip_len) + iphdr_len;
-        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, saddr), isrx ? raddr : laddr, 16);
-        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, daddr), isrx ? laddr : raddr, 16);
+        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, saddr), isrx ? laddr : raddr, 16);
+        bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, daddr), isrx ? raddr : laddr, 16);
     }
 
     tcphdr_ofs = ETH_HLEN + iphdr_len;
@@ -1432,8 +1435,8 @@ int handle_skb(struct __sk_buff *skb) {
         return skb->len;
     }
 
-    lport = bpf_ntohs(isrx ? dport : sport);
-    rport = bpf_ntohs(isrx ? sport : dport);
+    lport = bpf_ntohs(isrx ? sport : dport);
+    rport = bpf_ntohs(isrx ? dport : sport);
     stuple = bpf_map_lookup_elem(&heap_tuple, &zero);
     if (!stuple) {
         bpf_printk("WARNING: Failed to allocate new tuple for application message\n");
@@ -1486,7 +1489,6 @@ int handle_skb(struct __sk_buff *skb) {
     num = sinfo->app_msg.cnt;
     if (num >= APP_MSG_MAX)
         return skb->len;
-    else if (!num)
         
     bpf_skb_load_bytes(skb, tcphdr_ofs + offsetof(struct tcphdr, seq), &seq, sizeof(seq));
     sinfo->app_msg.seq[num] = bpf_ntohl(seq);
